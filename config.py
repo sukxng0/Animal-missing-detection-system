@@ -1,3 +1,9 @@
+import sys
+sys.argv = ['main.py', 
+            '--modeldir', '/home/ws/tflite1/TFLite_model',
+            '--threshold', '0.5',
+            '--resolution', '1280x720']
+
 import argparse
 
 def parse_args():
