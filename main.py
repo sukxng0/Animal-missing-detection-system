@@ -1,7 +1,8 @@
 import os
 import cv2
 import numpy as np
-
+import threading
+import queue
 from send_email import send_alert_email
 from camera_setup import initialize_camera
 from tflite_loader import load_interpreter
@@ -10,15 +11,11 @@ from detection import AnimalDetector
 from motor import BaseController
 from config import parse_args
 
-# Settings and initialization
 MODEL_NAME, GRAPH_NAME, LABELMAP_NAME, min_conf_threshold, res_w, res_h = parse_args()
 
 labels = load_labels(os.path.join(MODEL_NAME, LABELMAP_NAME))
-
-allowed_labels = [
-    'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-    'elephant', 'bear', 'zebra', 'giraffe'
-]
+allowed_labels = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+                  'elephant', 'bear', 'zebra', 'giraffe']
 
 interpreter, input_details, output_details, height, width, floating_model = load_interpreter(
     os.path.join(MODEL_NAME, GRAPH_NAME)
@@ -34,9 +31,31 @@ animal_detector = AnimalDetector(
 
 base = BaseController('/dev/ttyUSB0', 115200)  # Initialize motor serial
 
+motor_queue = queue.Queue()
+email_queue = queue.Queue()
+
+email_sent = False
 no_animal_frames = 0
 no_animal_threshold = 150
-email_sent = False
+
+def motor_worker():
+    while True:
+        center_x = motor_queue.get()
+        if center_x is None:
+            break
+        base.track_x(center_x)
+        motor_queue.task_done()
+
+def email_worker():
+    while True:
+        task = email_queue.get()
+        if task is None:
+            break
+        send_alert_email()
+        email_queue.task_done()
+
+threading.Thread(target=motor_worker, daemon=True).start()
+threading.Thread(target=email_worker, daemon=True).start()
 
 print("Press 'q' to exit")
 
@@ -47,8 +66,7 @@ while True:
     if animal_detected and center_x is not None:
         no_animal_frames = 0
         email_sent = False
-        # Align camera horizontal center with motor
-        base.track_x(center_x)
+        motor_queue.put(center_x)
     else:
         no_animal_frames += 1
 
@@ -56,8 +74,7 @@ while True:
         cv2.putText(frame, "Animal missing!", (30, 80),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
         if not email_sent:
-            print("Sending email alert...")
-            send_alert_email()
+            email_queue.put(True)
             email_sent = True
 
     cv2.imshow('Object Detector', frame)
@@ -67,3 +84,7 @@ while True:
 
 cv2.destroyAllWindows()
 picam2.close()
+
+motor_queue.put(None)
+email_queue.put(None)
+
